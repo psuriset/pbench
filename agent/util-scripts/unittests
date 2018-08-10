@@ -1,5 +1,6 @@
 #!/bin/bash
-
+export LANG=C
+export LC_ALL=C
 _tdir=$(dirname $(readlink -f $0))
 
 _testroot=/var/tmp/pbench-test-utils
@@ -25,8 +26,6 @@ let res=res+$?
 mkdir -p $_testopt/util-scripts
 let res=res+$?
 cp $_tdir/../base $_testopt/
-mkdir -p $_testopt/config
-cp $_tdir/samples/pbench-agent.cfg $_testopt/config
 let res=res+$?
 mkdir -p $_testopt/tool-scripts
 let res=res+$?
@@ -44,9 +43,9 @@ for script in $scripts ; do
 done
 mkdir -p $_testopt/unittest-scripts/
 let res=res+$?
-cp -r $_tdir/test-bin/* $_testopt/unittest-scripts/
+cp -rL $_tdir/test-bin/* $_testopt/unittest-scripts/
 let res=res+$?
-cp $_tdir/test-bin/iostat-postprocess $_testopt/tool-scripts/postprocess
+cp -L $_tdir/test-bin/iostat-postprocess $_testopt/tool-scripts/postprocess
 let res=res+$?
 if [[ $res -ne 0 ]]; then
     echo "ERROR: failed to construct unittest execution directory hierarchy" \
@@ -64,16 +63,16 @@ res=0
 
 function _run {
     local sts
-    
+
     tname=$1
     shift
     tscrpt=$1
     shift
     echo "$tname $tscrpt $@"
     echo "+++ Running $tname $tscrpt" >> $_testout
-    benchmark_bin=$_testopt/unittest-scripts/bm pbench_run=$_testdir pbench_log=$_testdir/pbench.log pbench_config=$_testopt $_testopt/util-scripts/$tscrpt $@ >> $_testout 2>&1
+    benchmark_bin=$_testopt/unittest-scripts/bm pbench_run=$_testdir pbench_log=$_testdir/pbench.log pbench_config=$_testopt  benchmark_run_dir=$_testdir $_testopt/util-scripts/$tscrpt $@ >> $_testout 2>&1
     sts=$?
-    echo "--- Finished $tname $tscrpt (status=$sts}" >> $_testout
+    echo "--- Finished $tname $tscrpt (status=$sts)" >> $_testout
     return $sts
 }
 function _save_tree {
@@ -99,6 +98,11 @@ function _save_tree {
 }
 function _dump_logs {
     # Dump the state of any generated script logs
+    if [ -f $_testdir/metadata.log ] ;then
+        echo "+++ metadata.log file contents" >> $_testout
+        grep -HvF "\-\-should-n0t-ex1st--" $_testdir/metadata.log >> $_testout 2>&1
+        echo "--- metadata.log file contents" >> $_testout
+    fi
     echo "+++ pbench.log file contents" >> $_testout
     grep -HvF "\-\-should-n0t-ex1st--" $_testdir/pbench.log >> $_testout 2>&1
     echo "--- pbench.log file contents" >> $_testout
@@ -108,12 +112,14 @@ function _dump_logs {
     rm -f $_testroot/test-execution.log
 }
 function _verify_output {
-    local sts tname tscrpt
+    local sts tname tscrpt expected_status
     sts=$1
     tname=$2
     tscrpt=$3
     expected_status=${4:-0}
-    diff -cw $_tdir/gold/${tscrpt}/${tname}.txt $_testout
+    # fix up any pids that have snuck into the output.
+    sed 's;tmp/\([a-z-]*\).[0-9][0-9]*;tmp/\1.NNNNN;' $_testout |
+        diff -cw $_tdir/gold/${tscrpt}/${tname}.txt -
     if [[ $? -gt 0 ]]; then
         echo "FAIL - $tname"
         mv $_testout $_testroot/${tname}_output.txt
@@ -123,7 +129,7 @@ function _verify_output {
             echo "PASS - $tname"
             rm $_testout
         elif [[ $sts -eq $expected_status ]] ; then
-            echo "PASS - $tname failed with expected exit status: $sts"
+            echo "PASS - $tname exited with expected status: $sts"
             rm $_testout
             sts=0
         else
@@ -145,7 +151,7 @@ function _setup_state {
     fi
     if [ ! -z "$tool" -a ! -z "$tst" ] ;then
         if [ -d $_tdir/samples/$tool/$tst ] ;then
-            cp -r $_tdir/samples/$tool/$tst/* $_testdir
+            cp -r $_tdir/samples/$tool/$tst/* $_testroot
         fi
     fi
 }
@@ -173,6 +179,9 @@ declare -A tools=(
     [test-09]="pbench-stop-tools"
     [test-10]="pbench-stop-tools"
     [test-11]="pbench-register-tool-set"
+    [test-11.1]="pbench-register-tool-set"
+    [test-11.2]="pbench-register-tool-set"
+    [test-11.3]="pbench-register-tool-set"
     [test-12]="pbench-clear-tools"
     [test-13]="pbench-postprocess-tools"
     [test-14]="pbench-agent-config-activate"
@@ -182,6 +191,17 @@ declare -A tools=(
     [test-18]="pbench-list-triggers"
     [test-19]="pbench-tool-trigger-test"
     [test-20]="pbench-postprocess-tools"
+    [test-21]="pbench-clear-tools"
+    [test-22]="pbench-metadata-log"
+    [test-23]="pbench-collect-sysinfo"
+    [test-24]="pbench-collect-sysinfo"
+    [test-25]="pbench-collect-sysinfo"
+    [test-26]="pbench-collect-sysinfo"
+    [test-27]="pbench-collect-sysinfo"
+    [test-28]="pbench-collect-sysinfo"
+    [test-29]="pbench-collect-sysinfo"
+    [test-30]="pbench-collect-sysinfo"
+    [test-31]="pbench-copy-results"
 )
 declare -A options=(
     [test-00]="--name=mpstat --group=default -- --interval=10"
@@ -197,12 +217,24 @@ declare -A options=(
     [test-10]="--dir=$_testdir/tmp"
     # fubar is assumed to *NOT* exist
     [test-11]="--remote=fubar"
+    [test-11.2]="--interval=10"
     [test-13]="--dir=$_testdir/tmp --group=default --iteration=1"
     [test-14]="$_testdir/tmp/pbench-agent.cfg"
     [test-15]="--group=default --start-trigger=\"START DEFAULT\" --stop-trigger=\"STOP DEFAULT\""
     [test-17]="--group=default"
     [test-18]="--group=foo"
     [test-20]="--dir=$_testdir/tmp --group=default --iteration=1"
+    [test-21]="--remote=fubar2"
+    [test-22]="--dir=$_testdir end"
+    [test-23]="--help"
+    [test-24]="--options"
+    [test-25]="--check --sysinfo=all"
+    [test-26]="--check --sysinfo=none"
+    [test-27]="--check --sysinfo=default"
+    [test-28]="--check --sysinfo=block,libvirt,kernel_config,sos,topology"
+    [test-29]="--check --sysinfo=block,sos,bad,topology"
+    [test-30]="--check --sysinfo=libvirt,default,kernel_config,all,topology,none"
+    [test-31]="--prefix=foo/bar --user=ndk"
 )
 
 declare -A expected_status=(
@@ -211,25 +243,32 @@ declare -A expected_status=(
     [test-11]=4
     [test-12]=1
     [test-13]=2
+    [test-29]=1
+)
+
+declare -A post_hooks=(
+    [test-31]='(echo "+++ metadata.log file contents"; cat $_testdir/pbench-user-benchmark_ndk-test-1_2018.05.23T03.21.32/metadata.log; echo "--- metadata.log file contents") >> $_testout'
 )
 
 tests="$*"
 if [ -z "$tests" ] ;then
     typeset -i len=${#tools[@]}
     len=$len-1
-    tests="$(seq -f "test-%02g" 0 $len)"
+    tests=$(echo ${!tools[*]} | tr ' ' '\n' | sort)
 fi
 
 for tst in $tests; do
     tool=${tools[$tst]}
     opts=${options[$tst]}
     status=${expected_status[$tst]}
+    post_hook=${post_hooks[$tst]}
 
     _setup_state $tst $tool
-    _run $tst $tool $opts
+    USER=nobody _run $tst $tool $opts
     res=$?
     _save_tree
     _dump_logs
+    eval "$post_hook"
     _verify_output $res $tst $tool $status
     res=$?
     let errs=$errs+$res

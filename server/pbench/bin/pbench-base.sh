@@ -5,13 +5,6 @@ function doexit {
     exit 1
 }
 
-if [[ -z "$TOP" ]]; then
-    doexit "TOP not defined before sourcing"
-fi
-
-if [[ -z "${TOP_LOCAL}" ]] ;then
-    TOP_LOCAL=$TOP
-fi
 # The only directory we verify exists here is $TMP, we leave
 # the rest to the individual scripts to check.
 
@@ -24,10 +17,6 @@ fi
 # two arguments (if it is called with one, both TOP and TOP_LOCAL are
 # set to the same thing).
 
-# TMP=$TOP/tmp
-TMP=${TOP_LOCAL}/tmp
-test -d $TMP || doexit "Bad TMP=$TMP"
-
 if which getconf.py > /dev/null 2>&1 ;then
     :
 else
@@ -35,18 +24,35 @@ else
     exit 2
 fi
 
+TMP=$(getconf.py pbench-tmp-dir pbench-files)
+PBENCH_ENV=$(getconf.py pbench-environment results)
+
+test -d $TMP || doexit "Bad TMP=$TMP"
+
+TOP=$(getconf.py pbench-top-dir pbench-files)
+BDIR=$(getconf.py pbench-backup-dir pbench-files)
+export LOGSDIR=$(getconf.py pbench-logs-dir pbench-files)
+
+if [[ -z "$_PBENCH_SERVER_TEST" ]]; then
+    # the real thing
+    BINDIR=$(getconf.py script-dir pbench-server)
+else
+    # running unit tests
+    BINDIR=.
+fi
+
 ARCHIVE=${TOP}/archive/fs-version-001
-LOGSDIR=${TOP_LOCAL}/logs
 INCOMING=${TOP}/public_html/incoming
 # this is where the symlink forest is going to go
 RESULTS=${TOP}/public_html/results
+USERS=${TOP}/public_html/users
 
 if [[ -z "$_PBENCH_SERVER_TEST" ]]; then
     function timestamp {
         echo "$(date +'%Y-%m-%dT%H:%M:%S-%Z')"
     }
     function timestamp-seconds-since-epoch {
-        echo "$(date +s)"
+        echo "$(date +'%s')"
     }
 else
     function timestamp {
@@ -63,11 +69,16 @@ if [ "$TS" = "" ]; then
     TS="run-$(timestamp)"
 fi
 
-# all the scripts use this to send status messages
-mail_recipients=$(getconf.py mailto pbench-server)
+# the scripts may use this to send status messages
+export mail_recipients=$(getconf.py mailto pbench-server)
 
 # make all the state directories for the pipeline and any others needed
-LINKDIRS="TODO TO-COPY-SOS TO-INDEX INDEXED WONT-INDEX DONE BAD-MD5"
+LINKDIRS="TODO TO-UNPACK TO-COPY-SOS TO-SYNC SYNCED TO-LINK TO-INDEX TO-BACKUP \
+	INDEXED WONT-INDEX DONE BAD-MD5 SATELLITE-MD5-PASSED SATELLITE-MD5-FAILED \
+	TO-DELETE SATELLITE-DONE TO-UNPACK UNPACKED MOVED-UNPACKED"
+
+# list of the state directories which will be excluded during rsync
+EXCLUDE_DIRS="$LINKDIRS WONT-INDEX*"
 
 function mk_dirs {
     hostname=$1
@@ -80,14 +91,16 @@ function mk_dirs {
         fi
     done
     # to accommodate different exit codes from index-pbench
-    mkdir -p $ARCHIVE/$hostname/WONT-INDEX.{1..9}
+    mkdir -p $ARCHIVE/$hostname/WONT-INDEX.{1..12}
     if [[ $? -ne 0 ]]; then
         return 2
     fi
 }
 
 function log_init {
-    LOG_DIR=$LOGSDIR/$(basename $0)
+    #LOG_DIR=$LOGSDIR/$(basename $0)
+    #TMP_DIR=$TMP/$(basename $0).$$
+    LOG_DIR=$2
     mkdir -p $LOG_DIR
     if [[ $? -ne 0 || ! -d "$LOG_DIR" ]]; then
         doexit "Unable to find/create logging directory, $LOG_DIR"
@@ -109,4 +122,31 @@ function log_finish {
     exec 2>&200  # Restore stderr
     exec 100>&-  # Close log file
     exec 4>&-    # Close error file
+}
+
+# Function used by the shims to quarantine problematic tarballs.  It
+# is assumed that the function is called within a log_init/log_finish
+# context.  Errors here are fatal but we log an error message to help
+# diagnose problems.
+function quarantine () {
+    dest=$1
+    shift
+    files="$@"
+
+    mkdir -p $dest
+    sts=$?
+    if [ $sts -ne 0 ] ;then
+        # log error
+        echo "$TS: quarantine $dest $files: \"mkdir -p $dest\" failed with status $sts" >&4
+        log_finish
+        exit 101
+    fi
+    mv $files $dest
+    sts=$?
+    if [ $sts -ne 0 ] ;then
+        # log error
+        echo "$TS: quarantine $dest $files: \"mv $files $dest\" failed with status $sts" >&4
+        log_finish
+        exit 102
+    fi
 }

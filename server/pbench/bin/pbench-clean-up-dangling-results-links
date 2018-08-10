@@ -15,15 +15,9 @@ case $opts in
         ;;
 esac
 
-if [[ -z "$1" ]]; then
-    echo "$PROG: Missing source pbench directory argument" >&2
-    exit 1
-fi
-TOP="$1"
-TOP_LOCAL="$2"
-
+# TOP, ARCHIVE, RESULTS are defined by the base file
 . $dir/pbench-base.sh
-log_init $(basename $0)
+log_init $(basename $0) $LOGSDIR/$(basename $0)
 
 # check that all the directories exist
 test -d $ARCHIVE || doexit "Bad ARCHIVE=$ARCHIVE"

@@ -2,12 +2,11 @@
 
 echo "$0 $*" >> $_testlog
 
-if [[ "$4" == "netstat" && "$5" == "-tlpn" ]]; then
-    echo "tcp        0      0 0.0.0.0:21000               0.0.0.0:*                   LISTEN      5830/uperf"
-fi
-
 while true ;do
     case $1 in
+        -i)
+            shift 2
+            ;;
         -o)
             shift 2
             ;;
@@ -21,7 +20,22 @@ while true ;do
 done
 remote=$1
 
-if [[ "$remote" == "fubar" ]] ;then
+if [[ "$2" == "netstat" && "$3" == "-tlnp" ]]; then
+    echo "tcp        0      0 0.0.0.0:21000               0.0.0.0:*                   LISTEN      5830/uperf"
+fi
+
+if [[ "$2" == "hostname" && "$3" == "-s" ]]; then
+    echo "$remote"
+fi
+
+# test -f (unquoted) should return failure
+if [[ "$2" == "test" && "$3" == "-f" ]]; then
+    exit 1
+elif [[ "$2" =~ "test -f".* ]]; then
+    # quoted "test -f ..." should also return failure
+    # util-scripts/test-31 depends on this
+    exit 1
+elif [[ "$remote" == "fubar" ]] ;then
     exit 255
 else
     exit 0

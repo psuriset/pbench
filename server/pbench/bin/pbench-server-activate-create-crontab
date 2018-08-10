@@ -9,6 +9,7 @@ prog=$(basename $0)
 usage="Usage: $prog <crontab-path> [<test-dir-prefix>]"
 
 crontabpath=$1
+# testdir is only used for unit tests
 testdir=$2
 
 if [ ! -z "$testdir" ] ;then
@@ -27,26 +28,35 @@ then
 fi
 
 echo "CONFIG=$CONFIG" > $crontab
+bindir=$(getconf.py script-dir pbench-server)
+if [ -z "$bindir" ] ;then
+    echo "No 'script-dir' setting in [pbench-server] section of config file $CONFIG"
+    exit 3
+fi
+echo "PATH=$bindir:$PATH" >> $crontab
 
 roles=$(getconf.py -l roles pbench-server)
 hostname=$(hostname -f)
+# in some cases, the host specified in the config file
+# is different from what hostname -f returns. In such
+# cases, we also have a "real" name in the config file
+# that *should* match what hostname -f returns
+realhost=$(getconf.py realhost pbench-server)
 
-for role in $roles ;do
-    host=$(getconf.py host $role)
-    if [ "$host" != "$hostname" ] ;then
-        continue
-    fi
+function crontab_normal() {
+    local role=$1
+    local host mailfrom mailto
+
     mailfrom=$(getconf.py mailfrom $role pbench-server)
     if [ -z "$mailfrom" ] ;then
         echo "$role: No mailfrom specified"
-        continue
     fi
     mailto=$(getconf.py mailto $role pbench-server)
     if [ -z "$mailto" ] ;then
         echo "$role: No mailto specified"
-        continue
+
     fi
-    
+
     grep -q MAILTO $crontab ||
         echo "MAILTO=$mailto" >> $crontab
     grep -q MAILFROM $crontab ||
@@ -56,6 +66,66 @@ for role in $roles ;do
         crontabline=$(getconf.py crontab $task)
         echo "$crontabline" >> $crontab
     done
+}
+
+# This function expands a crontab template from a task in the config file
+# with values from a specific section that specifies replacements.
+# E.g. the crontab option in the task [pbench-sync] might have this
+# value:
+#   * * * * * flock -n %(deploy-lock-dir)s/$SATELLITE_LOCK %(deploy-script-dir)s/pbench-sync-satellite\
+#                    $SATELLITE_PREFIX $SATELLITE_HOST $SATELLITE_ARCHIVE
+# The placeholders (the $-prefixed names) are replaced from the section
+# that is passed in as the first argument. E.g if the section is "satellite-testing"
+# and the [satellite-testing] section looks like this:
+#
+# [satellite-testing]
+# satellite-host = dhcp31-38.perf.lab.eng.bos.redhat.com
+# satellite-prefix = TESTING
+# satellite-lock = pbench-sync-satellite-dhcp31-38.lock
+# satellite-archive = /pbench/archive/fs-version-001
+#
+# the (admittedly obscure) last line substitutes for $SATELLITE_HOST the
+# value of satellite-host in the section and similarly for all the other
+# options in the section.
+#
+function crontab_with_substitutions() {
+    local section=$1
+    local task=$2
+
+    crontabline=$(getconf.py crontab $task)
+    echo "$crontabline" | sed "$(getconf.py -a $section | grep = | awk -F' = ' '{gsub(/-/, "_", $1); printf "s;$%s;%s;g\n", toupper($1) , $2;}')"  >> $crontab
+}
+
+for role in $roles ;do
+    host=$(getconf.py host $role)
+    if [ "$host" != "$hostname" -a "$realhost" != "$hostname" ] ;then
+        if [ "${_PBENCH_SERVER_TEST}" != "1" ] ;then 
+            continue
+        fi
+    fi
+    case $role in
+        pbench-sync-satellites)
+            satellites=$(getconf.py -l satellites $role)
+            tasks=$(getconf.py -l tasks $role)
+            for satellite in $satellites ;do
+                for task in $tasks; do
+                    crontab_with_substitutions $satellite $task
+                done
+            done
+            ;;
+        pbench-prep)
+            shims=$(getconf.py -l shims $role)
+            tasks=$(getconf.py -l tasks $role)
+            for shim in $shims ;do
+                for task in $tasks; do
+                    crontab_with_substitutions $shim $task
+                done
+            done
+            ;;
+        *)
+            crontab_normal $role
+            ;;
+    esac
 done
 
 chmod 644 $crontab

@@ -1,0 +1,97 @@
+#! /bin/bash
+
+prog=$(basename $0)
+dir=$(dirname $0)
+
+function usage() {
+    echo "Usage: $prog --name <name> --timestamp <ts> --type status|error <file-to-index>"
+}
+
+opts=$(getopt -q -o hn:t:T: --longoptions "help,name:,timestamp:,type:" -n "getopt.sh" -- "$@");
+
+eval set -- "$opts"
+while true; do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -n|--name)
+            name="$2"
+            shift 2
+            ;;
+        -t|--timestamp)
+            timestamp="${2#run-}"
+            timestamp="${timestamp%-UTC}"
+            shift 2
+            ;;
+        -T|--type)
+            doctype="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+    esac
+done
+
+file=$1
+
+# if no name, timestamp, type, or file bail
+if [ -z "$name" ] ;then
+    usage
+    exit 1
+fi
+
+if [ -z "$timestamp" ] ;then
+    usage
+    exit 2
+fi
+
+if [ -z "$doctype" ] ;then
+    usage
+    exit 3
+fi
+
+if [ -z "$file" ] ;then
+    usage
+    exit 1
+fi
+
+# Some servers might no have an accessible ES instance.
+# The config file will contain
+#   use-mail-for-status = yes
+# in that case and we'll fall back to mail.
+report_using_mail=$(getconf.py use-mail-for-status pbench-server)
+if [ ! -z "$report_using_mail" -a "$report_using_mail" != "no" ] ;then
+    mailx -s "$name status report" $mail_recipients < $file
+    status=$?
+    exit $status
+fi
+
+CONFIG=/opt/pbench-server/lib/config/pbench-index.cfg
+
+server=$(getconf.py server Server)
+datestamp=${timestamp%-*}
+index=$(getconf.py index_prefix Settings)."$name"."$datestamp"
+md5=$(md5sum $file | cut -d' ' -f1)
+
+tmp=/tmp/$prog.$$
+
+trap "rm -rf $tmp" EXIT QUIT INT
+
+mkdir $tmp
+
+$dir/pbench-gen-json-payload $timestamp $name $doctype $file > ${tmp}/payload
+
+curl -XPOST -H 'Content-Type: application/json' "http://$server/$index/$doctype/$md5" --data @"${tmp}/payload" >> ${tmp}/log 2>&1
+status=$?
+
+echo >> ${tmp}/log
+
+if [ -f "$LOGSDIR/$name/$name.log" ]; then
+    cat ${tmp}/log >> $LOGSDIR/$name/$name.log
+fi
+
+exit $status
